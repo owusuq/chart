@@ -106,7 +106,7 @@ export default function SignupPage() {
             disabled={loading}
             className="w-full rounded-chat bg-signal text-ink font-medium text-sm py-2.5 hover:bg-signalDim transition-colors disabled:opacity-60"
           >
-            {loading ? "Creating account…" : "Create account"}
+            {loading ? "Creating account..." : "Create account"}
           </button>
         </form>
 
