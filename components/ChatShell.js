@@ -54,20 +54,21 @@ export default function ChatShell({ currentUser, initialConversations }) {
 
   async function openConversation(conv) {
     // We may only have the id + is_ai (e.g. reopening an already-accepted
-    // connection) — fill in the rest from what we already have, or fetch it.
+    // connection) — resolve the current name of the other participant
+    // rather than trusting any stale "title" snapshot.
     let full = conv;
-    if (!full.title && !full.is_ai) {
-      const existing = conversations.find((c) => c.id === conv.id);
-      if (existing) {
-        full = existing;
-      } else {
-        const { data } = await supabase
-          .from("conversations")
-          .select("id, is_ai, title")
-          .eq("id", conv.id)
-          .single();
-        if (data) full = data;
-      }
+    const existing = conversations.find((c) => c.id === conv.id);
+
+    if (existing) {
+      full = existing;
+    } else if (!full.is_ai) {
+      const { data: participants } = await supabase
+        .from("conversation_participants")
+        .select("user_id, profiles(username)")
+        .eq("conversation_id", conv.id);
+
+      const other = (participants || []).find((p) => p.user_id !== currentUser.id);
+      full = { id: conv.id, is_ai: false, title: other?.profiles?.username || "Conversation" };
     }
 
     setConversations((prev) => (prev.some((c) => c.id === full.id) ? prev : [...prev, full]));

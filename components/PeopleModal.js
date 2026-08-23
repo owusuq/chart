@@ -62,6 +62,31 @@ export default function PeopleModal({ currentUserId, onClose, onOpenConversation
     setBusyId(otherUser.id);
     setError("");
 
+    // Guard against a duplicate row in the opposite direction (which would
+    // otherwise let two separate accepted requests spawn two conversations).
+    const { data: existing } = await supabase
+      .from("connection_requests")
+      .select("id, sender_id, receiver_id, status, conversation_id")
+      .or(
+        `and(sender_id.eq.${currentUserId},receiver_id.eq.${otherUser.id}),and(sender_id.eq.${otherUser.id},receiver_id.eq.${currentUserId})`
+      )
+      .maybeSingle();
+
+    if (existing) {
+      setBusyId(null);
+      setStatusMap((prev) => {
+        const next = new Map(prev);
+        next.set(otherUser.id, {
+          requestId: existing.id,
+          status: existing.status,
+          iAmSender: existing.sender_id === currentUserId,
+          conversationId: existing.conversation_id,
+        });
+        return next;
+      });
+      return;
+    }
+
     const { data, error } = await supabase
       .from("connection_requests")
       .insert({ sender_id: currentUserId, receiver_id: otherUser.id, status: "pending" })
@@ -85,27 +110,64 @@ export default function PeopleModal({ currentUserId, onClose, onOpenConversation
     setBusyId(otherId);
     setError("");
 
-    // Creates the conversation, adds both participants, and marks the
-    // request accepted — all atomically, server-side, so we never hit the
-    // RLS visibility race (or leave an orphaned conversation) that the old
-    // three-step client-side version did.
-    const { data: conv, error: acceptError } = await supabase.rpc("accept_connection_request", {
-      request_id: entry.requestId,
-    });
+    // WhatsApp-style: never create a second thread with someone you already
+    // have one with. Check for an existing shared (non-AI) conversation first.
+    const [{ data: myConvos }, { data: theirConvos }] = await Promise.all([
+      supabase.from("conversation_participants").select("conversation_id").eq("user_id", currentUserId),
+      supabase.from("conversation_participants").select("conversation_id").eq("user_id", otherId),
+    ]);
+
+    const myIds = new Set((myConvos || []).map((r) => r.conversation_id));
+    const sharedId = (theirConvos || []).map((r) => r.conversation_id).find((id) => myIds.has(id));
+
+    let convId = sharedId;
+
+    if (!convId) {
+      // No existing thread — create one.
+      const { data: conv, error: convError } = await supabase
+        .from("conversations")
+        .insert({ is_ai: false, title: people.find((p) => p.id === otherId)?.username || "Conversation" })
+        .select()
+        .single();
+
+      if (convError) {
+        setBusyId(null);
+        setError(convError.message);
+        return;
+      }
+
+      const { error: partError } = await supabase.from("conversation_participants").insert([
+        { conversation_id: conv.id, user_id: currentUserId },
+        { conversation_id: conv.id, user_id: otherId },
+      ]);
+
+      if (partError) {
+        setBusyId(null);
+        setError(partError.message);
+        return;
+      }
+
+      convId = conv.id;
+    }
+
+    const { error: updateError } = await supabase
+      .from("connection_requests")
+      .update({ status: "accepted", conversation_id: convId, responded_at: new Date().toISOString() })
+      .eq("id", entry.requestId);
 
     setBusyId(null);
-    if (acceptError) {
-      setError(acceptError.message);
+    if (updateError) {
+      setError(updateError.message);
       return;
     }
 
     setStatusMap((prev) => {
       const next = new Map(prev);
-      next.set(otherId, { ...entry, status: "accepted", conversationId: conv.id });
+      next.set(otherId, { ...entry, status: "accepted", conversationId: convId });
       return next;
     });
 
-    onOpenConversation(conv);
+    onOpenConversation({ id: convId, is_ai: false });
     onClose();
   }
 
