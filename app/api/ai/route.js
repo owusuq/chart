@@ -1,11 +1,11 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { createClient } from "@/lib/supabaseServer";
 import { NextResponse } from "next/server";
 
-const anthropic = new Anthropic({
-  baseURL: "https://api.meta.ai",
-  apiKey: process.env.MODEL_API_KEY,
-});
+// Groq's free API — no credit card required. Get a key at console.groq.com.
+// It speaks the same request/response shape as OpenAI's chat completions API,
+// so this is a plain fetch call rather than needing an extra SDK dependency.
+const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_MODEL = "llama-3.3-70b-versatile";
 
 export async function POST(request) {
   const supabase = createClient();
@@ -59,17 +59,39 @@ export async function POST(request) {
     return NextResponse.json({ error: "Nothing to respond to" }, { status: 400 });
   }
 
-  // 4. Call Claude
+  if (!process.env.GROQ_API_KEY) {
+    return NextResponse.json(
+      { error: "GROQ_API_KEY is not set. Add it to .env.local (and to Vercel's env vars for production)." },
+      { status: 500 }
+    );
+  }
+
+  // 4. Call the AI
   let reply;
   try {
-    const response = await anthropic.messages.create({
-      model: "muse-spark-1.2",
-      max_tokens: 1024,
-      messages,
+    const res = await fetch(GROQ_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: GROQ_MODEL,
+        max_tokens: 1024,
+        messages,
+      }),
     });
-    reply = response.content.find((b) => b.type === "text")?.text ?? "";
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error("Groq API error:", res.status, errText);
+      return NextResponse.json({ error: "AI request failed" }, { status: 502 });
+    }
+
+    const data = await res.json();
+    reply = data.choices?.[0]?.message?.content ?? "";
   } catch (err) {
-    console.error("Anthropic API error:", err);
+    console.error("Groq API error:", err);
     return NextResponse.json({ error: "AI request failed" }, { status: 502 });
   }
 
