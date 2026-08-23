@@ -85,38 +85,17 @@ export default function PeopleModal({ currentUserId, onClose, onOpenConversation
     setBusyId(otherId);
     setError("");
 
-    // Create the 1:1 conversation the two of you will chat in.
-    const { data: conv, error: convError } = await supabase
-      .from("conversations")
-      .insert({ is_ai: false, title: people.find((p) => p.id === otherId)?.username || "Conversation" })
-      .select()
-      .single();
-
-    if (convError) {
-      setBusyId(null);
-      setError(convError.message);
-      return;
-    }
-
-    const { error: partError } = await supabase.from("conversation_participants").insert([
-      { conversation_id: conv.id, user_id: currentUserId },
-      { conversation_id: conv.id, user_id: otherId },
-    ]);
-
-    if (partError) {
-      setBusyId(null);
-      setError(partError.message);
-      return;
-    }
-
-    const { error: updateError } = await supabase
-      .from("connection_requests")
-      .update({ status: "accepted", conversation_id: conv.id, responded_at: new Date().toISOString() })
-      .eq("id", entry.requestId);
+    // Creates the conversation, adds both participants, and marks the
+    // request accepted — all atomically, server-side, so we never hit the
+    // RLS visibility race (or leave an orphaned conversation) that the old
+    // three-step client-side version did.
+    const { data: conv, error: acceptError } = await supabase.rpc("accept_connection_request", {
+      request_id: entry.requestId,
+    });
 
     setBusyId(null);
-    if (updateError) {
-      setError(updateError.message);
+    if (acceptError) {
+      setError(acceptError.message);
       return;
     }
 
